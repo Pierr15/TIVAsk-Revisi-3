@@ -4,6 +4,33 @@ import { groundingService } from "../ai-grounding/grounding.service";
 import { AppError } from "../../middleware/errorHandler";
 
 export class ConversationService {
+  private isGreeting(content: string): boolean {
+    const normalized = content
+      .toLowerCase()
+      .replace(/[!?.,]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    return /^(halo|hai|hi|hello|assalamualaikum|assalamu alaikum|selamat pagi|pagi|selamat siang|siang|selamat sore|sore|selamat malam|malam)( kak| min| admin)?$/.test(
+      normalized,
+    );
+  }
+
+  private getWelcomeMessage(): string {
+    return (
+      "Halo! 👋 Saya TIVAsk, asisten virtual informasi SPMB SMKN 1 Adiwerna.\n\n" +
+      "Saya dapat membantu menjawab pertanyaan seputar:\n" +
+      "• Jadwal dan alur SPMB\n" +
+      "• Persyaratan pendaftaran\n" +
+      "• Jalur dan kuota penerimaan\n" +
+      "• Informasi jurusan\n" +
+      "• Biaya dan daftar ulang\n" +
+      "• Informasi sekolah lainnya\n\n" +
+      "Silakan kirim pertanyaan Anda. Contoh:\n" +
+      '"Berapa kuota jurusan TJKT?"'
+    );
+  }
+
   async handleUserMessage(phoneNumber: string, content: string) {
     // 1. Find or create conversation
     let conversation = await prisma.conversation.findUnique({
@@ -33,24 +60,74 @@ export class ConversationService {
       },
     });
 
+    // Greeting / opening message
+    if (this.isGreeting(content)) {
+      const welcomeMessage = this.getWelcomeMessage();
+
+      await prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          sender: "BOT",
+          content: welcomeMessage,
+          evidenceIds: [],
+        },
+      });
+
+      return {
+        reply: welcomeMessage,
+        isFallback: false,
+        evidenceIds: [],
+      };
+    }
+
     // 3. Search for evidence using Retrieval Engine
     const retrieval = await retrievalService.findEvidence(
       content,
       conversation.lastTopic,
-      conversation.lastCategory
+      conversation.lastCategory,
     );
 
     // 4. Grounded Response or Fallback
     if (retrieval.match && retrieval.reason === "MATCH_FOUND") {
-      const history = (conversation.messages || [])
-        .reverse()
-        .map((m) => ({ sender: m.sender, content: m.content }));
-
       const grounding = await groundingService.generateResponse({
         question: content,
         evidence: retrieval.match,
-        history,
       });
+
+      // Retrieval menemukan kandidat,
+      // tetapi Gemini menilai evidence tidak cukup.
+      if (grounding.isFallback) {
+        await prisma.message.create({
+          data: {
+            conversationId: conversation.id,
+            sender: "BOT",
+            content: grounding.answer,
+            evidenceIds: [],
+          },
+        });
+
+        const openEscalation = await prisma.escalation.findFirst({
+          where: {
+            conversationId: conversation.id,
+            status: "OPEN",
+          },
+        });
+
+        if (!openEscalation) {
+          await prisma.escalation.create({
+            data: {
+              conversationId: conversation.id,
+              status: "OPEN",
+            },
+          });
+        }
+
+        return {
+          reply: grounding.answer,
+          isFallback: true,
+          evidenceIds: [],
+        };
+      }
 
       // Update conversation context
       await prisma.conversation.update({

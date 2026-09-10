@@ -25,14 +25,154 @@ export class RetrievalService {
       .trim();
   }
 
+  private containsPhrase(haystack: string, needle: string): boolean {
+    const normalizedHaystack = this.normalizeText(haystack);
+
+    const normalizedNeedle = this.normalizeText(needle);
+
+    if (!normalizedNeedle) {
+      return false;
+    }
+
+    return ` ${normalizedHaystack} `.includes(` ${normalizedNeedle} `);
+  }
+
+  private evidenceMatchesToken(evidenceText: string, token: string): boolean {
+    const synonyms: Record<string, string[]> = {
+      kuota: ["kuota", "daya tampung"],
+
+      syarat: ["syarat", "persyaratan"],
+    };
+
+    const candidates = synonyms[token] || [token];
+
+    return candidates.some((candidate) =>
+      this.containsPhrase(evidenceText, candidate),
+    );
+  }
+
+  private getMeaningfulTokens(text: string): string[] {
+    const stopWords = new Set([
+      "apa",
+      "apakah",
+      "yang",
+      "untuk",
+      "dan",
+      "atau",
+      "di",
+      "ke",
+      "dari",
+      "ini",
+      "itu",
+      "berapa",
+      "kapan",
+      "bagaimana",
+      "gimana",
+      "mohon",
+      "tolong",
+      "saya",
+      "aku",
+      "kami",
+      "bisa",
+      "boleh",
+      "ya",
+      "tentang",
+      "mengenai",
+      "hari",
+      "kalau",
+      "kalo",
+      "klo",
+      "lalu",
+      "masuk",
+      "sekolah",
+      "pelaksanaan",
+    ]);
+
+    return [
+      ...new Set(
+        this.normalizeText(text)
+          .split(" ")
+          .map((token) => {
+            if (token.endsWith("nya") && token.length > 5) {
+              token = token.slice(0, -3);
+            }
+
+            const aliases: Record<string, string> = {
+              tkj: "tjkt",
+              tkr: "to",
+              tab: "to",
+            };
+
+            return aliases[token] || token;
+          })
+          .filter((token) => token.length > 2 && !stopWords.has(token)),
+      ),
+    ];
+  }
+
+  private getEvidenceCoverage(
+    entry: KnowledgeBaseEntry,
+    query: string,
+  ): number {
+    const queryTokens = this.getMeaningfulTokens(query);
+
+    if (queryTokens.length === 0) {
+      return 1;
+    }
+
+    // Hanya TITLE + CONTENT yang boleh
+    // dianggap sebagai evidence.
+    //
+    // KEYWORDS hanya digunakan untuk retrieval/ranking.
+    const evidenceText = [entry.title, entry.content].join(" ");
+
+    const matchedTokens = queryTokens.filter((token) =>
+      this.evidenceMatchesToken(evidenceText, token),
+    );
+
+    return matchedTokens.length / queryTokens.length;
+  }
+
+  private hasUnsupportedQueryNumbers(
+    entry: KnowledgeBaseEntry,
+    query: string,
+  ): boolean {
+    const queryNumbers = query.match(/\d+(?:[.,]\d+)*/g) || [];
+
+    if (queryNumbers.length === 0) {
+      return false;
+    }
+
+    const evidenceText = `${entry.title} ${entry.content}`;
+
+    const normalizeNumber = (value: string) => value.replace(/[.,]/g, "");
+
+    const evidenceNumbers = new Set(
+      (evidenceText.match(/\d+(?:[.,]\d+)*/g) || []).map(normalizeNumber),
+    );
+
+    return queryNumbers.some(
+      (number) => !evidenceNumbers.has(normalizeNumber(number)),
+    );
+  }
+
   detectAttributes(text: string): ExtractedAttributes {
     const norm = this.normalizeText(text);
     const words = norm.split(" ");
     const attrs: ExtractedAttributes = {};
 
     // 1. Gender detection
-    const femaleWords = ["perempuan", "wanita", "cewek", "putri", "siswi", "jilbab", "kerudung", "rok"];
-    const maleWords = ["laki", "laki-laki", "pria", "cowok", "putra", "siswa", "celana"];
+    const femaleWords = [
+      "perempuan",
+      "wanita",
+      "cewek",
+      "putri",
+      "siswi",
+      "jilbab",
+      "kerudung",
+      "rok",
+    ];
+    const maleWords = ["laki", "pria", "cowok", "putra", "celana"];
 
     if (femaleWords.some((w) => norm.includes(w))) {
       attrs.gender = "perempuan";
@@ -60,22 +200,42 @@ export class RetrievalService {
     // 3. Category detection
     if (/\b(biaya|spp|bayar|uang|tarif|seragam|gratis)\b/.test(norm)) {
       attrs.category = "BIAYA";
-    } else if (/\b(jadwal|kapan|tanggal|waktu|tahapan|alur|dibuka|tutup|pengumuman)\b/.test(norm)) {
+    } else if (
+      /\b(jadwal|kapan|tanggal|waktu|tahapan|alur|dibuka|tutup|pengumuman)\b/.test(
+        norm,
+      )
+    ) {
       attrs.category = "JADWAL";
     } else if (/\b(jalur|kuota|afirmasi|prestasi|domisili)\b/.test(norm)) {
       attrs.category = "JALUR";
-    } else if (/\b(syarat|persyaratan|berkas|dokumen|ijazah|skl|rapor|raport|akta|kk)\b/.test(norm)) {
+    } else if (
+      /\b(syarat|persyaratan|berkas|dokumen|ijazah|skl|rapor|raport|akta|kk)\b/.test(
+        norm,
+      )
+    ) {
       attrs.category = "PERSYARATAN";
     } else if (/\b(daftar ulang|registrasi ulang|stopmap)\b/.test(norm)) {
       attrs.category = "DAFTAR_ULANG";
     } else if (/\b(buta warna|tes|mata)\b/.test(norm)) {
       attrs.category = "FAQ";
-    } else if (/\b(profil|alamat|lokasi|sejarah|telepon|email|kontak|hubungi)\b/.test(norm)) {
+    } else if (
+      /\b(profil|alamat|lokasi|sejarah|telepon|email|kontak|hubungi)\b/.test(
+        norm,
+      )
+    ) {
       attrs.category = "PROFIL";
     }
 
-    // 4. Follow-up detection (e.g., "kalau perempuan?", "kalo to?", "bagaimana yang cewek?")
-    if (/^(kalau|kalo|bagaimana|gimana|lalu|klo)\b/.test(norm) && words.length <= 5) {
+    // 4. Follow-up detection
+    const hasFollowUpPrefix = /^(kalau|kalo|klo|lalu|bagaimana|gimana)\b/.test(
+      norm,
+    );
+
+    const hasAnaphora =
+      words.some((word) => word.endsWith("nya")) ||
+      /\b(tersebut|itu)\b/.test(norm);
+
+    if (words.length <= 6 && (hasFollowUpPrefix || hasAnaphora)) {
       attrs.isFollowUp = true;
     }
 
@@ -85,29 +245,71 @@ export class RetrievalService {
   resolveContext(
     currentQuery: string,
     lastTopic?: string | null,
-    lastCategory?: string | null
-  ): { queryToUse: string; attributes: ExtractedAttributes } {
+    lastCategory?: string | null,
+  ): {
+    queryToUse: string;
+    attributes: ExtractedAttributes;
+  } {
     const currentAttrs = this.detectAttributes(currentQuery);
 
-    // If it's a follow-up without specifying a new topic
-    if (currentAttrs.isFollowUp && lastTopic && !currentAttrs.category) {
-      let combinedQuery = `${lastTopic} ${currentQuery}`;
+    if (currentAttrs.isFollowUp && lastTopic) {
+      let baseTopic = lastTopic;
+
+      // Kalau user mengganti gender, jangan bawa
+      // gender lama dari topik sebelumnya.
       if (currentAttrs.gender) {
-        combinedQuery = `${lastTopic} ${currentAttrs.gender}`;
-      } else if (currentAttrs.jurusan) {
-        combinedQuery = `${lastTopic} ${currentAttrs.jurusan}`;
+        baseTopic = this.normalizeText(
+          baseTopic
+            .replace(
+              /\b(siswa|siswi|laki[\s-]*laki|pria|wanita|perempuan|cowok|cewek|putra|putri)\b/gi,
+              " ",
+            )
+            .replace(/\s+/g, " ")
+            .trim(),
+        );
+
+        const canonicalGender =
+          currentAttrs.gender === "perempuan"
+            ? "perempuan putri"
+            : "laki laki putra";
+
+        const combinedQuery = `${baseTopic} ${canonicalGender}`.trim();
+
+        const combinedAttrs = this.detectAttributes(combinedQuery);
+
+        return {
+          queryToUse: combinedQuery,
+          attributes: {
+            ...combinedAttrs,
+            category:
+              currentAttrs.category || lastCategory || combinedAttrs.category,
+          },
+        };
       }
+
+      // Kalau user pindah jurusan dalam sebuah follow-up,
+      // jangan gabungkan nama jurusan lama dan baru.
+      if (currentAttrs.jurusan && lastCategory === "JURUSAN") {
+        baseTopic = "Jurusan";
+      }
+
+      const combinedQuery = `${baseTopic} ${currentQuery}`.trim();
+
       const combinedAttrs = this.detectAttributes(combinedQuery);
+
       return {
         queryToUse: combinedQuery,
+
         attributes: {
           ...combinedAttrs,
-          category: lastCategory || combinedAttrs.category,
+
+          category:
+            currentAttrs.category || lastCategory || combinedAttrs.category,
         },
       };
     }
 
-    // If query has its own distinct topic or category, ignore last context
+    // Pertanyaan baru tidak mewarisi topik lama.
     return {
       queryToUse: currentQuery,
       attributes: currentAttrs,
@@ -118,30 +320,35 @@ export class RetrievalService {
     entry: KnowledgeBaseEntry,
     normalizedQuery: string,
     queryTokens: string[],
-    attributes: ExtractedAttributes
+    attributes: ExtractedAttributes,
   ): number {
     let score = 0;
+
     const normTitle = this.normalizeText(entry.title);
     const normContent = this.normalizeText(entry.content);
 
-    // 1. Keyword exact matching
-    for (const kw of entry.keywords) {
-      const normKw = this.normalizeText(kw);
-      if (normalizedQuery.includes(normKw)) {
+    // 1. Exact keyword / phrase matching
+    for (const keyword of entry.keywords) {
+      const normalizedKeyword = this.normalizeText(keyword);
+
+      if (
+        normalizedKeyword &&
+        this.containsPhrase(normalizedQuery, normalizedKeyword)
+      ) {
         score += 6;
       }
     }
 
     // 2. Title token matching
     for (const token of queryTokens) {
-      if (token.length > 2 && normTitle.includes(token)) {
+      if (token.length > 2 && this.containsPhrase(normTitle, token)) {
         score += 4;
       }
     }
 
-    // 3. Content token matching (mild weight)
+    // 3. Content token matching
     for (const token of queryTokens) {
-      if (token.length > 3 && normContent.includes(token)) {
+      if (token.length > 3 && this.containsPhrase(normContent, token)) {
         score += 1;
       }
     }
@@ -151,29 +358,45 @@ export class RetrievalService {
       score += 5;
     }
 
-    // 5. Gender attribute-awareness
+    // 5. Gender awareness
+    const titleIsFemale =
+      this.containsPhrase(normTitle, "perempuan") ||
+      this.containsPhrase(normTitle, "siswi") ||
+      this.containsPhrase(normTitle, "wanita");
+
+    const titleIsMale =
+      this.containsPhrase(normTitle, "laki laki") ||
+      this.containsPhrase(normTitle, "pria") ||
+      this.containsPhrase(normTitle, "putra");
+
     if (attributes.gender === "perempuan") {
-      if (normTitle.includes("perempuan") || normTitle.includes("siswi")) {
+      if (titleIsFemale) {
         score += 15;
       }
-      if (normTitle.includes("laki-laki") || normTitle.includes("siswa")) {
-        score -= 25; // Strict penalty for opposite gender
-      }
-    } else if (attributes.gender === "laki-laki") {
-      if (normTitle.includes("laki-laki") || normTitle.includes("siswa")) {
-        score += 15;
-      }
-      if (normTitle.includes("perempuan") || normTitle.includes("siswi")) {
-        score -= 25; // Strict penalty for opposite gender
+
+      if (titleIsMale) {
+        score -= 25;
       }
     }
 
-    // 6. Jurusan attribute-awareness
+    if (attributes.gender === "laki-laki") {
+      if (titleIsMale) {
+        score += 15;
+      }
+
+      if (titleIsFemale) {
+        score -= 25;
+      }
+    }
+
+    // 6. Jurusan awareness
     if (attributes.jurusan) {
-      if (normTitle.includes(attributes.jurusan.toLowerCase())) {
+      const department = attributes.jurusan.toLowerCase();
+
+      if (this.containsPhrase(normTitle, department)) {
         score += 15;
       } else if (entry.category === "JURUSAN") {
-        score -= 20; // Penalty for wrong department
+        score -= 20;
       }
     }
 
@@ -183,11 +406,16 @@ export class RetrievalService {
   async findEvidence(
     rawQuery: string,
     lastTopic?: string | null,
-    lastCategory?: string | null
+    lastCategory?: string | null,
   ): Promise<RetrievalResult> {
-    const { queryToUse, attributes } = this.resolveContext(rawQuery, lastTopic, lastCategory);
+    const { queryToUse, attributes } = this.resolveContext(
+      rawQuery,
+      lastTopic,
+      lastCategory,
+    );
+
     const normalizedQuery = this.normalizeText(queryToUse);
-    const queryTokens = normalizedQuery.split(" ").filter((t) => t.length > 1);
+    const queryTokens = this.getMeaningfulTokens(queryToUse);
 
     // Only PUBLISHED entries per PRD/TRD rule
     const publishedEntries = await prisma.knowledgeBaseEntry.findMany({
@@ -195,35 +423,70 @@ export class RetrievalService {
     });
 
     if (publishedEntries.length === 0) {
-      return { match: null, score: 0, reason: "NO_EVIDENCE" };
+      return {
+        match: null,
+        score: 0,
+        reason: "NO_EVIDENCE",
+      };
     }
 
     const scored = publishedEntries
-      .map((entry) => ({
-        entry,
-        score: this.scoreEntry(entry, normalizedQuery, queryTokens, attributes),
-      }))
-      .sort((a, b) => b.score - a.score);
+      .map((entry) => {
+        const hasUnsupportedNumbers = this.hasUnsupportedQueryNumbers(
+          entry,
+          rawQuery,
+        );
+
+        return {
+          entry,
+
+          score: this.scoreEntry(
+            entry,
+            normalizedQuery,
+            queryTokens,
+            attributes,
+          ),
+
+          coverage: hasUnsupportedNumbers
+            ? 0
+            : this.getEvidenceCoverage(entry, rawQuery),
+        };
+      })
+
+      .sort((a, b) => {
+        if (b.score !== a.score) {
+          return b.score - a.score;
+        }
+
+        return b.coverage - a.coverage;
+      });
 
     const top = scored[0];
     const second = scored[1];
 
-    // Minimum score threshold to consider relevant
     const MIN_THRESHOLD = 8;
+    const MIN_COVERAGE = 1;
 
-    if (!top || top.score < MIN_THRESHOLD) {
-      return { match: null, score: top?.score || 0, reason: "NO_EVIDENCE" };
+    if (!top || top.score < MIN_THRESHOLD || top.coverage < MIN_COVERAGE) {
+      return {
+        match: null,
+        score: top?.score || 0,
+        reason: "NO_EVIDENCE",
+      };
     }
 
-    // Ambiguity check: if 1st and 2nd scores are high and very close from different categories
-    if (second && second.score >= MIN_THRESHOLD && top.score - second.score < 2) {
-      if (top.entry.category !== second.entry.category) {
-        return {
-          match: null,
-          score: top.score,
-          reason: "AMBIGUOUS",
-        };
-      }
+    if (
+      second &&
+      second.score >= MIN_THRESHOLD &&
+      second.coverage >= MIN_COVERAGE &&
+      top.score - second.score < 3 &&
+      Math.abs(top.coverage - second.coverage) < 0.2
+    ) {
+      return {
+        match: null,
+        score: top.score,
+        reason: "AMBIGUOUS",
+      };
     }
 
     return {
