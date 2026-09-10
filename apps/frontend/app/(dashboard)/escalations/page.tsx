@@ -19,28 +19,38 @@ import { EscalationDTO, EscalationStatus } from "@tivask/shared";
 
 export default function EscalationsPage() {
   const [escalations, setEscalations] = useState<EscalationDTO[]>([]);
-  const [selectedEsc, setSelectedEsc] = useState<EscalationDTO | null>(null);
+  const [selectedEscId, setSelectedEscId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("OPEN");
   const [replyText, setReplyText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [feedback, setFeedback] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
+
+  const selectedEsc = escalations.find((e) => e.id === selectedEscId);
 
   const fetchEscalations = async () => {
     setLoading(true);
     try {
       const query = statusFilter ? `?status=${statusFilter}` : "";
-      const res = await api.get<{ escalations: EscalationDTO[] }>(`/api/escalations${query}`);
+      const res = await api.get<{ escalations: EscalationDTO[] }>(
+        `/api/escalations${query}`,
+      );
       setEscalations(res.escalations);
       if (res.escalations.length > 0) {
-        if (!selectedEsc || !res.escalations.some((e) => e.id === selectedEsc.id)) {
-          setSelectedEsc(res.escalations[0]);
+        if (
+          !selectedEscId ||
+          !res.escalations.some((e) => e.id === selectedEscId)
+        ) {
+          setSelectedEscId(res.escalations[0].id);
         } else {
-          const updated = res.escalations.find((e) => e.id === selectedEsc.id);
-          if (updated) setSelectedEsc(updated);
+          const updated = res.escalations.find((e) => e.id === selectedEscId);
+          if (updated) setSelectedEscId(updated.id);
         }
       } else {
-        setSelectedEsc(null);
+        setSelectedEscId(null);
       }
     } catch (err) {
       console.error("Failed to load escalations:", err);
@@ -57,15 +67,19 @@ export default function EscalationsPage() {
 
   const handleSendReply = async (e: React.FormEvent) => {
     e.preventDefault();
+    const selectedEsc = escalations.find((e) => e.id === selectedEscId);
     if (!selectedEsc || !replyText.trim()) return;
 
     setSubmitting(true);
     setFeedback(null);
 
     try {
-      const res = await api.post<any>(`/api/escalations/${selectedEsc.id}/reply`, {
-        message: replyText.trim(),
-      });
+      const res = await api.post<any>(
+        `/api/escalations/${selectedEsc.id}/reply`,
+        {
+          message: replyText.trim(),
+        },
+      );
 
       setFeedback({
         type: "success",
@@ -87,6 +101,7 @@ export default function EscalationsPage() {
   };
 
   const handleResolveOnly = async () => {
+    const selectedEsc = escalations.find((e) => e.id === selectedEscId);
     if (!selectedEsc) return;
     setSubmitting(true);
     setFeedback(null);
@@ -116,7 +131,8 @@ export default function EscalationsPage() {
             Eskalasi Pertanyaan Siswa / Wali
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            Pertanyaan yang tidak terjawab otomatis oleh bot diarahkan ke sini untuk ditindaklanjuti panitia.
+            Pertanyaan yang tidak terjawab otomatis oleh bot diarahkan ke sini
+            untuk ditindaklanjuti panitia.
           </p>
         </div>
 
@@ -183,11 +199,13 @@ export default function EscalationsPage() {
                   <button
                     key={esc.id}
                     onClick={() => {
-                      setSelectedEsc(esc);
+                      setSelectedEscId(esc.id);
                       setFeedback(null);
                     }}
                     className={`w-full text-left p-4 transition-colors flex flex-col gap-1.5 ${
-                      isSelected ? "bg-indigo-50/70 border-l-4 border-indigo-600" : "hover:bg-slate-50"
+                      isSelected
+                        ? "bg-indigo-50/70 border-l-4 border-indigo-600"
+                        : "hover:bg-slate-50"
                     }`}
                   >
                     <div className="flex items-center justify-between">
@@ -207,12 +225,17 @@ export default function EscalationsPage() {
                     </div>
 
                     <div className="text-xs text-slate-500">
-                      Topik: {esc.conversation?.lastTopic || "(Pertanyaan di luar KB)"}
+                      Topik:{" "}
+                      {esc.conversation?.lastTopic || "(Pertanyaan di luar KB)"}
                     </div>
 
                     <div className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5">
                       <Clock className="h-3 w-3" />
-                      <span>{esc.createdAt ? new Date(esc.createdAt).toLocaleTimeString("id-ID") : "-"}</span>
+                      <span>
+                        {esc.createdAt
+                          ? new Date(esc.createdAt).toLocaleTimeString("id-ID")
+                          : "-"}
+                      </span>
                     </div>
                   </button>
                 );
@@ -265,7 +288,8 @@ export default function EscalationsPage() {
                   Riwayat Percakapan
                 </div>
 
-                {selectedEsc.conversation?.messages && selectedEsc.conversation.messages.length > 0 ? (
+                {selectedEsc.conversation?.messages &&
+                selectedEsc.conversation.messages.length > 0 ? (
                   selectedEsc.conversation.messages.map((msg) => {
                     const isUser = msg.sender === "USER";
                     const isAdmin = msg.sender === "ADMIN";
@@ -281,7 +305,11 @@ export default function EscalationsPage() {
                               isAdmin ? "bg-purple-600" : "bg-indigo-600"
                             }`}
                           >
-                            {isAdmin ? <ShieldCheck className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}
+                            {isAdmin ? (
+                              <ShieldCheck className="h-3.5 w-3.5" />
+                            ) : (
+                              <Bot className="h-3.5 w-3.5" />
+                            )}
                           </div>
                         )}
 
@@ -290,14 +318,20 @@ export default function EscalationsPage() {
                             isUser
                               ? "bg-indigo-600 text-white rounded-br-none"
                               : isAdmin
-                              ? "bg-purple-50 text-purple-950 border border-purple-200 rounded-bl-none"
-                              : "bg-white text-slate-800 border border-slate-200 rounded-bl-none"
+                                ? "bg-purple-50 text-purple-950 border border-purple-200 rounded-bl-none"
+                                : "bg-white text-slate-800 border border-slate-200 rounded-bl-none"
                           }`}
                         >
                           <div className="text-[10px] font-semibold opacity-70 mb-0.5">
-                            {isUser ? "User" : isAdmin ? "Panitia" : "Bot (Fallback)"}
+                            {isUser
+                              ? "User"
+                              : isAdmin
+                                ? "Panitia"
+                                : "Bot (Fallback)"}
                           </div>
-                          <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                          <p className="whitespace-pre-wrap leading-relaxed">
+                            {msg.content}
+                          </p>
                         </div>
 
                         {isUser && (
@@ -331,7 +365,8 @@ export default function EscalationsPage() {
                   />
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] text-slate-500">
-                      Balasan akan otomatis berawalan *Pesan dari Panitia SPMB SMKN 1 Adiwerna*
+                      Balasan akan otomatis berawalan *Pesan dari Panitia SPMB
+                      SMKN 1 Adiwerna*
                     </span>
                     <button
                       type="submit"
@@ -354,7 +389,9 @@ export default function EscalationsPage() {
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center p-12 text-slate-400">
               <AlertTriangle className="h-10 w-10 text-slate-300 mb-3" />
-              <p className="text-sm font-medium">Pilih salah satu eskalasi di sebelah kiri untuk melihat detail.</p>
+              <p className="text-sm font-medium">
+                Pilih salah satu eskalasi di sebelah kiri untuk melihat detail.
+              </p>
             </div>
           )}
         </div>
