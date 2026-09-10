@@ -1,12 +1,28 @@
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi, type MockInstance } from "vitest";
+import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { app } from "../src/app";
+import { prisma } from "../src/lib/prisma";
+import { whatsAppService } from "../src/modules/whatsapp-gateway/whatsapp.service";
 
 
 describe("Backend REST API Integration Tests", () => {
   let authToken = "";
   let createdKBId = "";
   let escalationId = "";
+  let conversationId = "";
+  let sendMock: MockInstance<[string, string], Promise<boolean>>;
+
+  beforeAll(async () => {
+    // Dedicated database fixture; never reply to an existing user's escalation.
+    sendMock = vi.spyOn(whatsAppService, "sendMessage").mockResolvedValue(false);
+    const conversation = await prisma.conversation.create({
+      data: { phoneNumber: "test-p1-api-" + randomUUID() },
+    });
+    conversationId = conversation.id;
+    const escalation = await prisma.escalation.create({ data: { conversationId } });
+    escalationId = escalation.id;
+  });
 
   it("GET /api/health -> returns 200 ok", async () => {
     const res = await request(app).get("/api/health");
@@ -105,13 +121,21 @@ describe("Backend REST API Integration Tests", () => {
 
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.escalations)).toBe(true);
-    if (res.body.escalations.length > 0) {
-      escalationId = res.body.escalations[0].id;
-    }
+  });
+
+  it("POST /api/escalations/:id/reply with disconnected gateway -> 503 and OPEN", async () => {
+    sendMock.mockResolvedValue(false);
+    const res = await request(app)
+      .post(`/api/escalations/${escalationId}/reply`)
+      .set("Authorization", `Bearer ${authToken}`)
+      .send({ message: "Balasan uji yang gagal dikirim" });
+    expect(res.status).toBe(503);
+    expect((await prisma.escalation.findUnique({ where: { id: escalationId } }))?.status).toBe("OPEN");
+    expect(await prisma.message.count({ where: { conversationId, sender: "ADMIN" } })).toBe(0);
   });
 
   it("POST /api/escalations/:id/reply -> sends admin reply and resolves escalation", async () => {
-    if (!escalationId) return;
+    sendMock.mockResolvedValue(true);
 
     const res = await request(app)
       .post(`/api/escalations/${escalationId}/reply`)
@@ -137,7 +161,9 @@ describe("Backend REST API Integration Tests", () => {
   });
 
   afterAll(async () => {
-    const { prisma } = await import("../src/lib/prisma");
+    if (createdKBId) await prisma.knowledgeBaseEntry.deleteMany({ where: { id: createdKBId } });
+    if (conversationId) await prisma.conversation.deleteMany({ where: { id: conversationId } });
+    sendMock?.mockRestore();
     await prisma.$disconnect();
   });
 });

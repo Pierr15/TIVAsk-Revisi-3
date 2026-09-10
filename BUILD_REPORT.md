@@ -1,5 +1,7 @@
 # BUILD REPORT — TIVAsk (TI Virtual Assistant School Knowledge)
 
+> **Catatan revisi P1:** laporan berikut merekam implementasi awal. Konfigurasi JWT, perilaku pengiriman gagal, retrieval/fallback, dan penanganan pengirim LID telah direvisi. Lihat [P1-REVISION.md](P1-REVISION.md) untuk perubahan perilaku, konfigurasi wajib, cara menjalankan tes, dan batas validasi. Klaim pengujian awal di bawah tidak menjadi bukti integrasi layanan eksternal pada revisi P1.
+
 **Program:** Hackathon DIGIForward | **Tim:** Adaptiva — SMK Negeri 1 Adiwerna  
 **Versi:** 1.0.0 (MVP Complete) | **Tanggal:** 10 September 2026
 

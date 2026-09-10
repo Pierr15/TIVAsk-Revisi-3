@@ -41,8 +41,9 @@ describe("Retrieval Engine & Attribute Scoring", () => {
 
     const resolved = retrievalService.resolveContext("kalau perempuan?", lastTopic, lastCategory);
     expect(resolved.attributes.gender).toBe("perempuan");
-    expect(resolved.queryToUse).toContain("Ketentuan Seragam Siswa Laki-laki");
-    expect(resolved.queryToUse).toContain("perempuan");
+    expect(resolved.queryToUse).toContain("seragam");
+    expect(resolved.queryToUse).toContain("putri");
+    expect(resolved.queryToUse).not.toContain("putra");
   });
 
   it("ignores previous context when user asks a new subject", () => {

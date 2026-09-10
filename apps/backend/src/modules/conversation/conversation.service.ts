@@ -157,6 +157,12 @@ export class ConversationService {
       // Fallback required: evidence not found, ambiguous, or below threshold
       const fallbackText = groundingService.getFallbackMessage();
 
+      // A rejected/new topic must not resurrect an older answer on the next follow-up.
+      await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { lastTopic: null, lastCategory: null },
+      });
+
       // Save bot fallback response
       await prisma.message.create({
         data: {

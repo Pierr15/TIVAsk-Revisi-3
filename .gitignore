@@ -12,6 +12,8 @@ dist/
 build/
 .next/
 coverage/
+test-results/
+playwright-report/
 
 # WhatsApp Web.js
 .wwebjs_auth/

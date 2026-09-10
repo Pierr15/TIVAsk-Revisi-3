@@ -1,3 +1,4 @@
+import { JWT_SECRET } from "../../config/auth";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { prisma } from "../../lib/prisma";
@@ -23,12 +24,11 @@ export class AuthService {
       throw new AppError("Email atau password tidak sesuai", 401);
     }
 
-    const secret = process.env.JWT_SECRET || "default-secret";
     // 8 hours expiry per TRD Section 9
     const token = jwt.sign(
       { id: admin.id, email: admin.email },
-      secret,
-      { expiresIn: "8h" }
+      JWT_SECRET,
+      { expiresIn: "8h", algorithm: "HS256" }
     );
 
     return {

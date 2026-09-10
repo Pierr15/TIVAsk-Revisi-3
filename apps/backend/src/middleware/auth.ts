@@ -1,3 +1,4 @@
+import { JWT_SECRET } from "../config/auth";
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { AppError } from "./errorHandler";
@@ -32,9 +33,11 @@ export function authGuard(req: Request, res: Response, next: NextFunction) {
   }
 
   try {
-    const secret = process.env.JWT_SECRET || "default-secret";
-    const decoded = jwt.verify(token, secret) as AuthPayload;
-    req.user = decoded;
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] });
+    if (typeof decoded === "string" || typeof decoded.id !== "string" || typeof decoded.email !== "string") {
+      throw new Error("Payload token tidak valid");
+    }
+    req.user = { id: decoded.id, email: decoded.email };
     next();
   } catch (error) {
     return next(new AppError("Akses ditolak: token tidak valid atau telah kedaluwarsa", 401));

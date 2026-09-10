@@ -63,48 +63,48 @@ export class EscalationService {
   }
 
   async reply(escalationId: string, adminId: string, replyText: string) {
-    if (!replyText || replyText.trim().length === 0) {
+    if (typeof replyText !== "string" || !replyText.trim()) {
       throw new AppError("Pesan balasan tidak boleh kosong", 400);
     }
 
     const escalation = await this.getById(escalationId);
-
-    // 1. Save admin response as Message
-    const message = await prisma.message.create({
-      data: {
-        conversationId: escalation.conversationId,
-        sender: "ADMIN",
-        content: replyText.trim(),
-        evidenceIds: [],
-      },
-    });
-
-    // 2. Mark escalation as resolved
-    const updatedEscalation = await prisma.escalation.update({
-      where: { id: escalationId },
-      data: {
-        status: "RESOLVED",
-        handledById: adminId,
-      },
-      include: {
-        conversation: true,
-        handledBy: {
-          select: { id: true, email: true },
-        },
-      },
-    });
-
-    // 3. Dispatch to WhatsApp Gateway
+    if (escalation.status !== "OPEN") {
+      throw new AppError("Eskalasi sudah selesai. Muat ulang daftar sebelum melanjutkan.", 409);
+    }
+    const text = replyText.trim();
     const sent = await whatsAppService.sendMessage(
       escalation.conversation.phoneNumber,
-      `*Pesan dari Panitia SPMB SMKN 1 Adiwerna:*\n\n${replyText.trim()}`
+      "*Pesan dari Panitia SPMB SMKN 1 Adiwerna:*\n\n" + text
     );
+    if (!sent) {
+      throw new AppError("Pengiriman WhatsApp belum berhasil dikonfirmasi. Eskalasi tetap terbuka dan draf dapat dicoba kembali setelah koneksi diperiksa.", 503);
+    }
 
-    return {
-      escalation: updatedEscalation,
-      message,
-      whatsAppSent: sent,
-    };
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const message = await tx.message.create({
+          data: {
+            conversationId: escalation.conversationId,
+            sender: "ADMIN",
+            content: text,
+            evidenceIds: [],
+          },
+        });
+        const updatedEscalation = await tx.escalation.update({
+          where: { id: escalationId },
+          data: { status: "RESOLVED", handledById: adminId },
+          include: {
+            conversation: true,
+            handledBy: { select: { id: true, email: true } },
+          },
+        });
+        return { escalation: updatedEscalation, message };
+      });
+      return { ...result, whatsAppSent: true };
+    } catch (error) {
+      console.error("WhatsApp accepted the reply, but database recording failed:", error);
+      throw new AppError("WhatsApp sudah menerima pesan, tetapi pencatatan gagal. Periksa chat WhatsApp sebelum mengirim ulang agar pesan tidak ganda.", 500);
+    }
   }
 
   async resolve(escalationId: string, adminId: string) {

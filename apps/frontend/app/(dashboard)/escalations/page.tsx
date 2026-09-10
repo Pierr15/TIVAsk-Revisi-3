@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -21,88 +21,75 @@ export default function EscalationsPage() {
   const [escalations, setEscalations] = useState<EscalationDTO[]>([]);
   const [selectedEscId, setSelectedEscId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("OPEN");
-  const [replyText, setReplyText] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const selectedEsc = escalations.find((esc) => esc.id === selectedEscId) ?? null;
+  const replyText = selectedEsc ? drafts[selectedEsc.id] ?? "" : "";
+  const latestRequest = useRef(0);
+  const sending = useRef(false);
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [feedback, setFeedback] = useState<{
-    type: "success" | "error";
-    text: string;
-  } | null>(null);
+  const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  const selectedEsc = escalations.find((e) => e.id === selectedEscId);
-
-  const fetchEscalations = async () => {
+  const fetchEscalations = useCallback(async () => {
+    const requestId = ++latestRequest.current;
     setLoading(true);
     try {
-      const query = statusFilter ? `?status=${statusFilter}` : "";
-      const res = await api.get<{ escalations: EscalationDTO[] }>(
-        `/api/escalations${query}`,
-      );
+      const query = statusFilter ? "?status=" + statusFilter : "";
+      const res = await api.get<{ escalations: EscalationDTO[] }>("/api/escalations" + query);
+      if (requestId !== latestRequest.current) return;
       setEscalations(res.escalations);
-      if (res.escalations.length > 0) {
-        if (
-          !selectedEscId ||
-          !res.escalations.some((e) => e.id === selectedEscId)
-        ) {
-          setSelectedEscId(res.escalations[0].id);
-        } else {
-          const updated = res.escalations.find((e) => e.id === selectedEscId);
-          if (updated) setSelectedEscId(updated.id);
-        }
-      } else {
-        setSelectedEscId(null);
-      }
+      // Pilihan pengguna tetap berdasarkan ID; polling tidak memilih penerima lain.
     } catch (err) {
       console.error("Failed to load escalations:", err);
     } finally {
-      setLoading(false);
+      if (requestId === latestRequest.current) setLoading(false);
     }
-  };
+  }, [statusFilter]);
 
   useEffect(() => {
-    fetchEscalations();
-    const interval = setInterval(fetchEscalations, 10000);
-    return () => clearInterval(interval);
-  }, [statusFilter]);
+    setSelectedEscId(null);
+    void fetchEscalations();
+    const interval = setInterval(() => void fetchEscalations(), 10000);
+    return () => {
+      clearInterval(interval);
+      latestRequest.current += 1;
+    };
+  }, [fetchEscalations]);
 
   const handleSendReply = async (e: React.FormEvent) => {
     e.preventDefault();
-    const selectedEsc = escalations.find((e) => e.id === selectedEscId);
-    if (!selectedEsc || !replyText.trim()) return;
+    if (sending.current || !selectedEsc || selectedEsc.status !== "OPEN" || !replyText.trim()) return;
 
+    const targetId = selectedEsc.id;
+    const text = replyText.trim();
+    sending.current = true;
     setSubmitting(true);
     setFeedback(null);
-
     try {
-      const res = await api.post<any>(
-        `/api/escalations/${selectedEsc.id}/reply`,
-        {
-          message: replyText.trim(),
-        },
-      );
-
-      setFeedback({
-        type: "success",
-        text: res.whatsAppSent
-          ? "Balasan berhasil dikirim langsung ke WhatsApp pengguna & eskalasi ditandai selesai!"
-          : "Balasan tersimpan di sistem & eskalasi selesai (WhatsApp Gateway sedang tidak terhubung).",
+      const res = await api.post<{ whatsAppSent: boolean }>("/api/escalations/" + targetId + "/reply", {
+        message: text,
       });
-
-      setReplyText("");
-      fetchEscalations();
+      if (!res.whatsAppSent) {
+        throw new Error("Pengiriman belum berhasil. Periksa koneksi WhatsApp; draf tetap tersedia.");
+      }
+      setFeedback({ type: "success", text: "Balasan diterima gateway WhatsApp dan eskalasi ditandai selesai." });
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[targetId];
+        return next;
+      });
+      await fetchEscalations();
     } catch (err: any) {
-      setFeedback({
-        type: "error",
-        text: err.message || "Gagal mengirim balasan eskalasi.",
-      });
+      setFeedback({ type: "error", text: err.message || "Gagal mengirim balasan eskalasi." });
     } finally {
+      sending.current = false;
       setSubmitting(false);
     }
   };
 
   const handleResolveOnly = async () => {
-    const selectedEsc = escalations.find((e) => e.id === selectedEscId);
-    if (!selectedEsc) return;
+    if (sending.current || !selectedEsc) return;
+    sending.current = true;
     setSubmitting(true);
     setFeedback(null);
     try {
@@ -118,6 +105,7 @@ export default function EscalationsPage() {
         text: err.message || "Gagal menyelesaikan eskalasi.",
       });
     } finally {
+      sending.current = false;
       setSubmitting(false);
     }
   };
@@ -131,13 +119,13 @@ export default function EscalationsPage() {
             Eskalasi Pertanyaan Siswa / Wali
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            Pertanyaan yang tidak terjawab otomatis oleh bot diarahkan ke sini
-            untuk ditindaklanjuti panitia.
+            Pertanyaan yang tidak terjawab otomatis oleh bot diarahkan ke sini untuk ditindaklanjuti panitia.
           </p>
         </div>
 
         <div className="flex items-center gap-3">
           <select
+            disabled={submitting}
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             className="px-4 py-2 rounded-xl bg-white border border-slate-200 text-sm font-medium text-slate-700 shadow-sm focus:border-indigo-600 focus:outline-none"
@@ -148,7 +136,9 @@ export default function EscalationsPage() {
           </select>
 
           <button
-            onClick={fetchEscalations}
+            aria-label="Muat ulang eskalasi"
+            disabled={submitting}
+            onClick={() => void fetchEscalations()}
             className="p-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 shadow-sm"
           >
             <RefreshCw className="h-4 w-4" />
@@ -198,14 +188,13 @@ export default function EscalationsPage() {
                 return (
                   <button
                     key={esc.id}
+                    disabled={submitting}
                     onClick={() => {
                       setSelectedEscId(esc.id);
                       setFeedback(null);
                     }}
                     className={`w-full text-left p-4 transition-colors flex flex-col gap-1.5 ${
-                      isSelected
-                        ? "bg-indigo-50/70 border-l-4 border-indigo-600"
-                        : "hover:bg-slate-50"
+                      isSelected ? "bg-indigo-50/70 border-l-4 border-indigo-600" : "hover:bg-slate-50"
                     }`}
                   >
                     <div className="flex items-center justify-between">
@@ -225,17 +214,12 @@ export default function EscalationsPage() {
                     </div>
 
                     <div className="text-xs text-slate-500">
-                      Topik:{" "}
-                      {esc.conversation?.lastTopic || "(Pertanyaan di luar KB)"}
+                      Topik: {esc.conversation?.lastTopic || "(Pertanyaan di luar KB)"}
                     </div>
 
                     <div className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5">
                       <Clock className="h-3 w-3" />
-                      <span>
-                        {esc.createdAt
-                          ? new Date(esc.createdAt).toLocaleTimeString("id-ID")
-                          : "-"}
-                      </span>
+                      <span>{esc.createdAt ? new Date(esc.createdAt).toLocaleTimeString("id-ID") : "-"}</span>
                     </div>
                   </button>
                 );
@@ -288,8 +272,7 @@ export default function EscalationsPage() {
                   Riwayat Percakapan
                 </div>
 
-                {selectedEsc.conversation?.messages &&
-                selectedEsc.conversation.messages.length > 0 ? (
+                {selectedEsc.conversation?.messages && selectedEsc.conversation.messages.length > 0 ? (
                   selectedEsc.conversation.messages.map((msg) => {
                     const isUser = msg.sender === "USER";
                     const isAdmin = msg.sender === "ADMIN";
@@ -305,11 +288,7 @@ export default function EscalationsPage() {
                               isAdmin ? "bg-purple-600" : "bg-indigo-600"
                             }`}
                           >
-                            {isAdmin ? (
-                              <ShieldCheck className="h-3.5 w-3.5" />
-                            ) : (
-                              <Bot className="h-3.5 w-3.5" />
-                            )}
+                            {isAdmin ? <ShieldCheck className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}
                           </div>
                         )}
 
@@ -318,20 +297,14 @@ export default function EscalationsPage() {
                             isUser
                               ? "bg-indigo-600 text-white rounded-br-none"
                               : isAdmin
-                                ? "bg-purple-50 text-purple-950 border border-purple-200 rounded-bl-none"
-                                : "bg-white text-slate-800 border border-slate-200 rounded-bl-none"
+                              ? "bg-purple-50 text-purple-950 border border-purple-200 rounded-bl-none"
+                              : "bg-white text-slate-800 border border-slate-200 rounded-bl-none"
                           }`}
                         >
                           <div className="text-[10px] font-semibold opacity-70 mb-0.5">
-                            {isUser
-                              ? "User"
-                              : isAdmin
-                                ? "Panitia"
-                                : "Bot (Fallback)"}
+                            {isUser ? "User" : isAdmin ? "Panitia" : "Bot (Fallback)"}
                           </div>
-                          <p className="whitespace-pre-wrap leading-relaxed">
-                            {msg.content}
-                          </p>
+                          <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
                         </div>
 
                         {isUser && (
@@ -359,18 +332,22 @@ export default function EscalationsPage() {
                     required
                     rows={3}
                     value={replyText}
-                    onChange={(e) => setReplyText(e.target.value)}
+                    disabled={submitting || selectedEsc.status !== "OPEN"}
+                    onChange={(e) => {
+                      const targetId = selectedEsc.id;
+                      const value = e.target.value;
+                      setDrafts((current) => ({ ...current, [targetId]: value }));
+                    }}
                     placeholder="Tuliskan jawaban resmi panitia di sini. Pesan akan terkirim langsung ke nomor WhatsApp pengirim..."
                     className="w-full rounded-xl border border-slate-300 p-3 text-sm focus:border-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
                   />
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] text-slate-500">
-                      Balasan akan otomatis berawalan *Pesan dari Panitia SPMB
-                      SMKN 1 Adiwerna*
+                      Balasan akan otomatis berawalan *Pesan dari Panitia SPMB SMKN 1 Adiwerna*
                     </span>
                     <button
                       type="submit"
-                      disabled={submitting || !replyText.trim()}
+                      disabled={submitting || selectedEsc.status !== "OPEN" || !replyText.trim()}
                       className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 shadow-md disabled:opacity-50 transition-colors"
                     >
                       {submitting ? (
@@ -389,9 +366,7 @@ export default function EscalationsPage() {
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center p-12 text-slate-400">
               <AlertTriangle className="h-10 w-10 text-slate-300 mb-3" />
-              <p className="text-sm font-medium">
-                Pilih salah satu eskalasi di sebelah kiri untuk melihat detail.
-              </p>
+              <p className="text-sm font-medium">Pilih salah satu eskalasi di sebelah kiri untuk melihat detail.</p>
             </div>
           )}
         </div>

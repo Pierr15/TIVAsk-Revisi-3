@@ -1,4 +1,5 @@
 import "dotenv/config";
+import "./config/auth";
 import { app } from "./app";
 import { whatsAppService } from "./modules/whatsapp-gateway/whatsapp.service";
 import { conversationService } from "./modules/conversation/conversation.service";
