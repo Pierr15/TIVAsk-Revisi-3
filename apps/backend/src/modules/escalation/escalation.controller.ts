@@ -30,7 +30,7 @@ export class EscalationController {
       const adminId = req.user!.id;
       const result = await escalationService.reply(id, adminId, message);
       return res.status(200).json({
-        successMessage: "Balasan berhasil dikirim",
+        successMessage: "Balasan diterima gateway WhatsApp",
         escalation: result.escalation,
         sentMessage: result.message,
         whatsAppSent: result.whatsAppSent,

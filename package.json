@@ -11,7 +11,9 @@
     "dev:frontend": "npm run dev --workspace=frontend",
     "build:backend": "npm run build --workspace=backend",
     "build:frontend": "npm run build --workspace=frontend",
-    "test:backend": "npm run test --workspace=backend"
+    "test:backend": "npm run test --workspace=backend",
+    "test:p1": "npm run test --workspace=backend -- tests/retrieval.test.ts tests/p1-",
+    "test:p1:ui": "playwright test --config=playwright.p1.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0"

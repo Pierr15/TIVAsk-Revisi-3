@@ -127,37 +127,36 @@ export class WhatsAppService {
     }
   }
 
+  private async resolvePhoneNumber(from: string): Promise<string> {
+    if (/^\d+@c\.us$/.test(from)) return from.slice(0, -5);
+    if (!/^\d+@lid$/.test(from) || !this.client) {
+      throw new Error("Pengirim privat tidak dapat dikenali");
+    }
+    const mappings = await this.client.getContactLidAndPhone([from]);
+    const pn = mappings.find((mapping) => mapping.lid === from)?.pn;
+    if (!pn || !/^\d+@c\.us$/.test(pn)) {
+      throw new Error("Nomor telepon untuk pengirim LID belum tersedia");
+    }
+    return pn.slice(0, -5);
+  }
+
   private async handleIncomingMessage(msg: WAMessage) {
-    // 1. Filter out self messages
-    if (msg.fromMe) return;
-
-    // 2. Filter out groups & broadcast per TRD Section 14
-    if (msg.from.includes("@g.us") || msg.from.includes("@broadcast") || !msg.from.endsWith("@c.us")) {
-      return;
-    }
-
-    const phoneNumber = msg.from.replace("@c.us", "");
-
-    // 3. Handle non-text messages
-    if (msg.type !== "chat") {
-      await msg.reply(
-        "Mohon maaf, TIVAsk saat ini hanya mendukung pesan teks seputar informasi SPMB SMKN 1 Adiwerna."
-      );
-      return;
-    }
-
-    const text = msg.body?.trim();
-    if (!text) return;
-
-    // 4. Delegate to business logic callback
-    if (this.onMessageHandler) {
+    if (msg.fromMe || !/^\d+@(c\.us|lid)$/.test(msg.from)) return;
+    try {
+      if (msg.type !== "chat") {
+        await msg.reply("Mohon maaf, TIVAsk saat ini hanya mendukung pesan teks seputar informasi SPMB SMKN 1 Adiwerna.");
+        return;
+      }
+      const text = msg.body?.trim();
+      if (!text || !this.onMessageHandler) return;
+      const phoneNumber = await this.resolvePhoneNumber(msg.from);
+      await this.onMessageHandler(phoneNumber, text, msg);
+    } catch (error) {
+      console.error("Error processing private WhatsApp message:", error);
       try {
-        await this.onMessageHandler(phoneNumber, text, msg);
-      } catch (error) {
-        console.error(`Error processing message from ${phoneNumber}:`, error);
-        await msg.reply(
-          "Terjadi kesalahan teknis saat memproses pesan Anda. Mohon coba sesaat lagi."
-        );
+        await msg.reply("Terjadi kesalahan teknis saat memproses pesan Anda. Mohon coba sesaat lagi.");
+      } catch (replyError) {
+        console.error("Failed to send technical-error reply:", replyError);
       }
     }
   }
@@ -169,9 +168,9 @@ export class WhatsAppService {
     }
 
     try {
-      const formattedTo = phoneNumber.includes("@c.us")
-        ? phoneNumber
-        : `${phoneNumber.replace(/\D/g, "")}@c.us`;
+      // Nomor harus berasal dari PN yang sudah diverifikasi, bukan angka dari LID.
+      if (!/^\d+(?:@c\.us)?$/.test(phoneNumber)) return false;
+      const formattedTo = phoneNumber.endsWith("@c.us") ? phoneNumber : phoneNumber + "@c.us";
 
       await this.client.sendMessage(formattedTo, content);
       return true;

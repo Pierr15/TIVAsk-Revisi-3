@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -19,75 +19,77 @@ import { EscalationDTO, EscalationStatus } from "@tivask/shared";
 
 export default function EscalationsPage() {
   const [escalations, setEscalations] = useState<EscalationDTO[]>([]);
-  const [selectedEsc, setSelectedEsc] = useState<EscalationDTO | null>(null);
+  const [selectedEscId, setSelectedEscId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("OPEN");
-  const [replyText, setReplyText] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const selectedEsc = escalations.find((esc) => esc.id === selectedEscId) ?? null;
+  const replyText = selectedEsc ? drafts[selectedEsc.id] ?? "" : "";
+  const latestRequest = useRef(0);
+  const sending = useRef(false);
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  const fetchEscalations = async () => {
+  const fetchEscalations = useCallback(async () => {
+    const requestId = ++latestRequest.current;
     setLoading(true);
     try {
-      const query = statusFilter ? `?status=${statusFilter}` : "";
-      const res = await api.get<{ escalations: EscalationDTO[] }>(`/api/escalations${query}`);
+      const query = statusFilter ? "?status=" + statusFilter : "";
+      const res = await api.get<{ escalations: EscalationDTO[] }>("/api/escalations" + query);
+      if (requestId !== latestRequest.current) return;
       setEscalations(res.escalations);
-      if (res.escalations.length > 0) {
-        if (!selectedEsc || !res.escalations.some((e) => e.id === selectedEsc.id)) {
-          setSelectedEsc(res.escalations[0]);
-        } else {
-          const updated = res.escalations.find((e) => e.id === selectedEsc.id);
-          if (updated) setSelectedEsc(updated);
-        }
-      } else {
-        setSelectedEsc(null);
-      }
+      // Pilihan pengguna tetap berdasarkan ID; polling tidak memilih penerima lain.
     } catch (err) {
       console.error("Failed to load escalations:", err);
     } finally {
-      setLoading(false);
+      if (requestId === latestRequest.current) setLoading(false);
     }
-  };
+  }, [statusFilter]);
 
   useEffect(() => {
-    fetchEscalations();
-    const interval = setInterval(fetchEscalations, 10000);
-    return () => clearInterval(interval);
-  }, [statusFilter]);
+    setSelectedEscId(null);
+    void fetchEscalations();
+    const interval = setInterval(() => void fetchEscalations(), 10000);
+    return () => {
+      clearInterval(interval);
+      latestRequest.current += 1;
+    };
+  }, [fetchEscalations]);
 
   const handleSendReply = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedEsc || !replyText.trim()) return;
+    if (sending.current || !selectedEsc || selectedEsc.status !== "OPEN" || !replyText.trim()) return;
 
+    const targetId = selectedEsc.id;
+    const text = replyText.trim();
+    sending.current = true;
     setSubmitting(true);
     setFeedback(null);
-
     try {
-      const res = await api.post<any>(`/api/escalations/${selectedEsc.id}/reply`, {
-        message: replyText.trim(),
+      const res = await api.post<{ whatsAppSent: boolean }>("/api/escalations/" + targetId + "/reply", {
+        message: text,
       });
-
-      setFeedback({
-        type: "success",
-        text: res.whatsAppSent
-          ? "Balasan berhasil dikirim langsung ke WhatsApp pengguna & eskalasi ditandai selesai!"
-          : "Balasan tersimpan di sistem & eskalasi selesai (WhatsApp Gateway sedang tidak terhubung).",
+      if (!res.whatsAppSent) {
+        throw new Error("Pengiriman belum berhasil. Periksa koneksi WhatsApp; draf tetap tersedia.");
+      }
+      setFeedback({ type: "success", text: "Balasan diterima gateway WhatsApp dan eskalasi ditandai selesai." });
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[targetId];
+        return next;
       });
-
-      setReplyText("");
-      fetchEscalations();
+      await fetchEscalations();
     } catch (err: any) {
-      setFeedback({
-        type: "error",
-        text: err.message || "Gagal mengirim balasan eskalasi.",
-      });
+      setFeedback({ type: "error", text: err.message || "Gagal mengirim balasan eskalasi." });
     } finally {
+      sending.current = false;
       setSubmitting(false);
     }
   };
 
   const handleResolveOnly = async () => {
-    if (!selectedEsc) return;
+    if (sending.current || !selectedEsc) return;
+    sending.current = true;
     setSubmitting(true);
     setFeedback(null);
     try {
@@ -103,6 +105,7 @@ export default function EscalationsPage() {
         text: err.message || "Gagal menyelesaikan eskalasi.",
       });
     } finally {
+      sending.current = false;
       setSubmitting(false);
     }
   };
@@ -122,6 +125,7 @@ export default function EscalationsPage() {
 
         <div className="flex items-center gap-3">
           <select
+            disabled={submitting}
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             className="px-4 py-2 rounded-xl bg-white border border-slate-200 text-sm font-medium text-slate-700 shadow-sm focus:border-indigo-600 focus:outline-none"
@@ -132,7 +136,9 @@ export default function EscalationsPage() {
           </select>
 
           <button
-            onClick={fetchEscalations}
+            aria-label="Muat ulang eskalasi"
+            disabled={submitting}
+            onClick={() => void fetchEscalations()}
             className="p-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 shadow-sm"
           >
             <RefreshCw className="h-4 w-4" />
@@ -182,8 +188,9 @@ export default function EscalationsPage() {
                 return (
                   <button
                     key={esc.id}
+                    disabled={submitting}
                     onClick={() => {
-                      setSelectedEsc(esc);
+                      setSelectedEscId(esc.id);
                       setFeedback(null);
                     }}
                     className={`w-full text-left p-4 transition-colors flex flex-col gap-1.5 ${
@@ -325,7 +332,12 @@ export default function EscalationsPage() {
                     required
                     rows={3}
                     value={replyText}
-                    onChange={(e) => setReplyText(e.target.value)}
+                    disabled={submitting || selectedEsc.status !== "OPEN"}
+                    onChange={(e) => {
+                      const targetId = selectedEsc.id;
+                      const value = e.target.value;
+                      setDrafts((current) => ({ ...current, [targetId]: value }));
+                    }}
                     placeholder="Tuliskan jawaban resmi panitia di sini. Pesan akan terkirim langsung ke nomor WhatsApp pengirim..."
                     className="w-full rounded-xl border border-slate-300 p-3 text-sm focus:border-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
                   />
@@ -335,7 +347,7 @@ export default function EscalationsPage() {
                     </span>
                     <button
                       type="submit"
-                      disabled={submitting || !replyText.trim()}
+                      disabled={submitting || selectedEsc.status !== "OPEN" || !replyText.trim()}
                       className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 shadow-md disabled:opacity-50 transition-colors"
                     >
                       {submitting ? (

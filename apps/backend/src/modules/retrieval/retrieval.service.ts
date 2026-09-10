@@ -32,11 +32,11 @@ export class RetrievalService {
 
     // 1. Gender detection
     const femaleWords = ["perempuan", "wanita", "cewek", "putri", "siswi", "jilbab", "kerudung", "rok"];
-    const maleWords = ["laki", "laki-laki", "pria", "cowok", "putra", "siswa", "celana"];
+    const maleWords = ["laki", "pria", "cowok", "putra", "celana"];
 
-    if (femaleWords.some((w) => norm.includes(w))) {
+    if (femaleWords.some((w) => words.includes(w))) {
       attrs.gender = "perempuan";
-    } else if (maleWords.some((w) => norm.includes(w))) {
+    } else if (maleWords.some((w) => words.includes(w))) {
       attrs.gender = "laki-laki";
     }
 
@@ -82,36 +82,75 @@ export class RetrievalService {
     return attrs;
   }
 
+  private canonicalize(text: string): string {
+    return this.normalizeText(text)
+      .replace(/\b(smkn|smk negeri) 1 adiwerna\b/g, "sekolah")
+      .replace(/\bteknik jaringan komputer dan telekomunikasi\b/g, "tjkt")
+      .replace(/\bteknik pengelasan dan fabrikasi logam\b/g, "tpfl")
+      .replace(/\bdesain pemodelan dan informasi bangunan\b/g, "dpib")
+      .replace(/\bteknik otomotif\b/g, "to")
+      .replace(/\bteknik ketenagalistrikan\b/g, "tk")
+      .replace(/\bteknik mesin\b/g, "tm")
+      .replace(/\bteknik elektronika\b/g, "te")
+      // Only equivalent names are aliases. Subjects such as CNC, mobil, and
+      // listrik must remain separate terms when checking evidence coverage.
+      .replace(/\btkj\b/g, "tjkt")
+      .replace(/\b(laki laki|laki|pria|cowok|putra)\b/g, "putra")
+      .replace(/\b(perempuan|wanita|cewek|putri|siswi)\b/g, "putri")
+      .replace(/\b(daftar ulang|registrasi ulang)\b/g, "daftarulang")
+      .replace(/\bdaya tampung\b/g, "kuota")
+      .replace(/\b(mendaftar|daftar)\b/g, "pendaftaran")
+      .replace(/\b(persyaratan|berkas)\b/g, "syarat")
+      .replace(/\braport\b/g, "rapor")
+      .replace(/\b(membayar|bayar|tarif|harga)\b/g, "biaya");
+  }
+
   resolveContext(
     currentQuery: string,
     lastTopic?: string | null,
     lastCategory?: string | null
   ): { queryToUse: string; attributes: ExtractedAttributes } {
     const currentAttrs = this.detectAttributes(currentQuery);
-
-    // If it's a follow-up without specifying a new topic
     if (currentAttrs.isFollowUp && lastTopic && !currentAttrs.category) {
-      let combinedQuery = `${lastTopic} ${currentQuery}`;
-      if (currentAttrs.gender) {
-        combinedQuery = `${lastTopic} ${currentAttrs.gender}`;
-      } else if (currentAttrs.jurusan) {
-        combinedQuery = `${lastTopic} ${currentAttrs.jurusan}`;
-      }
-      const combinedAttrs = this.detectAttributes(combinedQuery);
+      const previous = this.detectAttributes(lastTopic);
+      const attributes: ExtractedAttributes = {
+        ...previous,
+        ...currentAttrs,
+        category: lastCategory || previous.category,
+      };
+      const oldAttributes = new Set(["putra", "putri", "siswa", "tjkt", "to", "tpfl", "tk", "tm", "te", "dpib"]);
+      const topic = this.canonicalize(lastTopic).split(" ").filter((word) => !oldAttributes.has(word)).join(" ");
+      const gender = attributes.gender === "laki-laki" ? "putra" : attributes.gender === "perempuan" ? "putri" : "";
       return {
-        queryToUse: combinedQuery,
-        attributes: {
-          ...combinedAttrs,
-          category: lastCategory || combinedAttrs.category,
-        },
+        // Pertanyaan baru tetap disertakan agar topik tambahan tidak hilang.
+        queryToUse: [topic, this.canonicalize(currentQuery), gender, attributes.jurusan || ""].join(" ").trim(),
+        attributes,
       };
     }
+    return { queryToUse: currentQuery, attributes: currentAttrs };
+  }
 
-    // If query has its own distinct topic or category, ignore last context
-    return {
-      queryToUse: currentQuery,
-      attributes: currentAttrs,
-    };
+  private hasTopicEvidence(entry: KnowledgeBaseEntry, query: string): boolean {
+    // Kata penghubung dibuang; subjek spesifik seperti beasiswa/kursus/Jepang tetap diperiksa.
+    const ignored = new Set([
+      "apa", "apakah", "berapa", "berapakah", "bagaimana", "gimana", "kapan", "dimana", "mana", "siapa", "mengapa", "kenapa",
+      "saya", "kami", "kamu", "anda", "aku", "mau", "ingin", "dengar", "katanya", "tolong", "mohon", "dong", "ya", "yah", "kah",
+      "ada", "adalah", "itu", "ini", "yang", "untuk", "dan", "atau", "di", "ke", "dari", "dengan", "tentang", "terkait",
+      "kalau", "kalo", "klo", "lalu", "saja", "saat", "pada", "oleh", "nya", "seputar", "mengenai",
+      "perlu", "harus", "bisa", "dapat", "boleh", "butuh", "disiapkan", "mempersiapkan", "masuk", "pelaksanaan",
+      "sekolah", "smkn", "smk", "negeri", "adiwerna", "adb", "spmb", "ppdb", "siswa", "siswi", "murid", "calon",
+      "ketentuan", "panduan", "informasi", "resmi", "jurusan", "teknik", "hari"
+    ]);
+    const terms = [...new Set(this.canonicalize(query).split(" "))]
+      .filter((word) => (word.length > 1 || /^\d$/.test(word)) && !ignored.has(word));
+    if (!terms.length) return false;
+    // Keywords hanya membantu peringkat; bukti harus terdapat di judul/isi.
+    const evidence = entry.title + " " + entry.content;
+    const evidenceWords = new Set([
+      ...this.canonicalize(evidence).split(" "),
+      ...this.normalizeText(evidence).split(" "),
+    ]);
+    return terms.every((term) => evidenceWords.has(term));
   }
 
   scoreEntry(
@@ -199,6 +238,13 @@ export class RetrievalService {
     }
 
     const scored = publishedEntries
+      .filter((entry) => this.hasTopicEvidence(entry, queryToUse))
+      .filter((entry) => {
+        const entryAttrs = this.detectAttributes(entry.title);
+        if (attributes.gender && entryAttrs.gender && attributes.gender !== entryAttrs.gender) return false;
+        if (attributes.jurusan && entry.category === "JURUSAN" && entryAttrs.jurusan !== attributes.jurusan) return false;
+        return true;
+      })
       .map((entry) => ({
         entry,
         score: this.scoreEntry(entry, normalizedQuery, queryTokens, attributes),
@@ -215,15 +261,9 @@ export class RetrievalService {
       return { match: null, score: top?.score || 0, reason: "NO_EVIDENCE" };
     }
 
-    // Ambiguity check: if 1st and 2nd scores are high and very close from different categories
+    // Equally supported candidates are ambiguous, including the same category.
     if (second && second.score >= MIN_THRESHOLD && top.score - second.score < 2) {
-      if (top.entry.category !== second.entry.category) {
-        return {
-          match: null,
-          score: top.score,
-          reason: "AMBIGUOUS",
-        };
-      }
+      return { match: null, score: top.score, reason: "AMBIGUOUS" };
     }
 
     return {

@@ -47,21 +47,14 @@ describe("AI Grounding & Hallucination Guardrails", () => {
     expect(conv?.escalations[0].status).toBe("OPEN");
   });
 
-  it("Ambiguous / Fabricated value -> rejects fake value and falls back to verified evidence", async () => {
+  it("Unsupported specific value -> does not forward insufficient evidence to AI", async () => {
     // User tries to prompt inject or ask about a fake Rp 500.000 fee
     const promptInjection = "Saya dengar ada biaya pendaftaran 500 ribu rupiah ya?";
     const retrieval = await retrievalService.findEvidence(promptInjection);
 
-    expect(retrieval.match).not.toBeNull();
-    expect(retrieval.match?.title).toContain("Biaya Pendaftaran");
-
-    const grounding = await groundingService.generateResponse({
-      question: promptInjection,
-      evidence: retrieval.match!,
-    });
-
-    // Answer must NOT agree with the fake 500 ribu, but reinforce GRATIS from evidence
-    expect(grounding.answer.toLowerCase()).toContain("gratis");
+    // Mode konservatif: nilai spesifik yang tidak tercantum harus masuk fallback.
+    expect(retrieval.reason).toBe("NO_EVIDENCE");
+    expect(retrieval.match).toBeNull();
   });
 
   it("Follow-up question -> inherits relevant topic with attribute change", async () => {
